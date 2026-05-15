@@ -39,7 +39,8 @@ async function scrapePlaces() {
   
   const lote_hora = new Date().toISOString();
 
-  for (const placeName of places) {
+  for (let idx = 0; idx < places.length; idx++) {
+    const placeName = places[idx]!;
     const page = await context.newPage();
     try {
       console.log(`Buscando: ${placeName}`);
@@ -85,6 +86,29 @@ async function scrapePlaces() {
       // Busca a seção de lotação
       let status_movimento = 'Sem dados ao vivo';
       let percentual_estimado = null;
+
+      // Scrolla o painel lateral para baixo para carregar seções lazy
+      try {
+        // Tenta scrollar o painel principal do Maps
+        const scrollable = page.locator('div[role="main"], div.m6QErb, div[aria-label*="Resultados"], div[aria-label*="Informações"]').first();
+        if (await scrollable.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await scrollable.evaluate(el => {
+            el.scrollTop = el.scrollHeight;
+          });
+          await delay(1500, 3000);
+          // Scrolla de novo para garantir (conteúdo lazy pode carregar em etapas)
+          await scrollable.evaluate(el => {
+            el.scrollTop = el.scrollHeight;
+          });
+          await delay(1500, 3000);
+        } else {
+          // Fallback: scrolla a página toda
+          await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+          await delay(1500, 3000);
+        }
+      } catch (e) {
+        console.log('  -> Aviso: não conseguiu scrollar');
+      }
 
       // Patterns de aria-label para buscar
       const patterns = [
@@ -153,9 +177,12 @@ async function scrapePlaces() {
     } catch (error: any) {
       console.error(`Erro ao buscar ${placeName}: ${error.message}`);
     } finally {
+      const safeName = placeName.replace(/[^a-zA-Z0-9]/g, '_');
       try {
-        const safeName = placeName.replace(/[^a-zA-Z0-9]/g, '_');
-        await page.screenshot({ path: `debug_${safeName}.png`, fullPage: false });
+        // Só salva screenshot dos 3 primeiros para debug
+        if (idx < 3) {
+          await page.screenshot({ path: `debug_${safeName}.png`, fullPage: false });
+        }
       } catch (e) { /* ignora */ }
       await page.close();
       await delay(2000, 5000);
