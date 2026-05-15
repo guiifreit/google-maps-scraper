@@ -30,8 +30,11 @@ async function scrapePlaces() {
   console.log('Iniciando o scraper...');
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
     locale: 'pt-BR',
     timezoneId: 'America/Sao_Paulo',
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   });
   
   const lote_hora = new Date().toISOString();
@@ -42,7 +45,7 @@ async function scrapePlaces() {
       console.log(`Buscando: ${placeName}`);
       const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(placeName)}`;
       await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await delay(4000, 7000);
+      await delay(5000, 8000);
 
       // Fecha consentimento de cookies se aparecer
       try {
@@ -53,43 +56,55 @@ async function scrapePlaces() {
         }
       } catch (e) { /* ignora */ }
 
-      // Clica no primeiro resultado da lista lateral
+      // Tenta clicar no primeiro card de resultado da lista lateral
       try {
-        const firstResult = page.locator('a[href*="/maps/place/"]').first();
-        await firstResult.waitFor({ state: 'visible', timeout: 8000 });
-        await firstResult.click();
-        await delay(3000, 6000);
-        // Aguarda o painel direito carregar
-        await page.waitForSelector('h1, [role="main"]', { timeout: 10000 }).catch(() => {});
-        await delay(2000, 4000);
+        // Múltiplos seletores para o primeiro resultado
+        const selectors = [
+          'a[href*="/maps/place/"]',
+          'div[role="article"] a',
+          'a[class*="place"]',
+        ];
+        let clicked = false;
+        for (const sel of selectors) {
+          const el = page.locator(sel).first();
+          if (await el.isVisible({ timeout: 3000 }).catch(() => false)) {
+            await el.click();
+            clicked = true;
+            break;
+          }
+        }
+        if (!clicked) {
+          // Último recurso: clica no centro da tela (pode ativar o primeiro resultado)
+          await page.mouse.click(600, 300);
+        }
+        await delay(4000, 7000);
       } catch (e) {
-        console.log(`  -> Não encontrou lista de resultados, tentando direto...`);
+        console.log(`  -> Não conseguiu clicar em resultado`);
       }
 
-      // Busca a seção de lotação por múltiplos seletores
+      // Busca a seção de lotação
       let status_movimento = 'Sem dados ao vivo';
       let percentual_estimado = null;
 
-      // Seletor 1: aria-label contendo "Atualmente" (ao vivo)
-      try {
-        const liveEl = page.locator('[aria-label*="Atualmente"]').first();
-        if (await liveEl.isVisible({ timeout: 3000 })) {
-          const text = await liveEl.getAttribute('aria-label');
-          if (text) {
-            status_movimento = text;
-            const match = text.match(/(\d+)%/);
-            if (match) percentual_estimado = parseInt(match[1]!, 10);
-          }
-        }
-      } catch (e) { /* fallback */ }
+      // Patterns de aria-label para buscar
+      const patterns = [
+        'Atualmente',
+        'ocupação',
+        'movimentado',
+        'movimento',
+        'lotado',
+        'Popular',
+        'Horários',
+        'pico',
+      ];
 
-      // Seletor 2: procura aria-label contendo "ocupação" ou "movimentado"
-      if (status_movimento === 'Sem dados ao vivo') {
+      for (const pattern of patterns) {
+        if (status_movimento !== 'Sem dados ao vivo') break;
         try {
-          const busyElements = page.locator('[aria-label*="ocupação"], [aria-label*="movimentado"], [aria-label*="movimento"]');
-          const count = await busyElements.count();
+          const els = page.locator(`[aria-label*="${pattern}"]`);
+          const count = await els.count();
           for (let i = 0; i < count; i++) {
-            const text = await busyElements.nth(i).getAttribute('aria-label');
+            const text = await els.nth(i).getAttribute('aria-label');
             if (text && (text.includes('Atualmente') || text.includes('Agora') || text.includes('Normalmente'))) {
               status_movimento = text;
               const match = text.match(/(\d+)%/);
@@ -100,21 +115,19 @@ async function scrapePlaces() {
         } catch (e) { /* fallback */ }
       }
 
-      // Seletor 3: procura texto na página sobre horários de pico
+      // Fallback: varre o texto visível da página
       if (status_movimento === 'Sem dados ao vivo') {
         try {
           const bodyText = await page.locator('body').innerText();
           const lines = bodyText.split('\n');
           for (const line of lines) {
             if (line.includes('Atualmente') || line.includes('Agora')) {
-              status_movimento = line.trim();
+              status_movimento = line.trim().substring(0, 100);
               const match = line.match(/(\d+)%/);
               if (match) percentual_estimado = parseInt(match[1]!, 10);
               break;
             }
           }
-          // Se achou algo no texto, limita a 100 caracteres
-          if (status_movimento.length > 100) status_movimento = status_movimento.substring(0, 100);
         } catch (e) { /* fallback */ }
       }
 
@@ -140,8 +153,12 @@ async function scrapePlaces() {
     } catch (error: any) {
       console.error(`Erro ao buscar ${placeName}: ${error.message}`);
     } finally {
+      try {
+        const safeName = placeName.replace(/[^a-zA-Z0-9]/g, '_');
+        await page.screenshot({ path: `debug_${safeName}.png`, fullPage: false });
+      } catch (e) { /* ignora */ }
       await page.close();
-      await delay(2000, 5000); // Pausa humana entre locais
+      await delay(2000, 5000);
     }
   }
 
