@@ -32,10 +32,9 @@ async function scrapePlaces() {
         try {
             console.log(`Buscando: ${placeName}`);
             const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(placeName)}`;
-            await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
-            // Espera um pouco para o carregamento do mapa e painel lateral
-            await delay(3000, 6000);
-            // Tenta fechar o consentimento de cookies se aparecer
+            await page.goto(searchUrl, { waitUntil: 'networkidle' });
+            await delay(4000, 7000);
+            // Fecha consentimento de cookies se aparecer
             try {
                 const consentButton = page.locator('button:has-text("Aceitar tudo")');
                 if (await consentButton.isVisible({ timeout: 2000 })) {
@@ -43,32 +42,74 @@ async function scrapePlaces() {
                     await delay(1000, 2000);
                 }
             }
-            catch (e) { }
-            // A busca pode retornar uma lista ou abrir direto o lugar.
-            // Se tiver uma lista (vários resultados), clica no primeiro que parece ser o principal
-            const firstResult = page.locator('a[href*="/maps/place/"]').first();
-            if (await firstResult.isVisible({ timeout: 3000 })) {
+            catch (e) { /* ignora */ }
+            // Clica no primeiro resultado da lista lateral
+            try {
+                const firstResult = page.locator('a[href*="/maps/place/"]').first();
+                await firstResult.waitFor({ state: 'visible', timeout: 8000 });
                 await firstResult.click();
-                await delay(3000, 5000);
+                await delay(3000, 6000);
+                // Aguarda o painel direito carregar
+                await page.waitForSelector('h1, [role="main"]', { timeout: 10000 }).catch(() => { });
+                await delay(2000, 4000);
             }
-            // Agora procuramos a seção de horários de pico
-            // Geralmente tem aria-labels descrevendo a ocupação
-            const busyElements = page.locator('[aria-label*="ocupação"], [aria-label*="movimentado"]');
-            const count = await busyElements.count();
+            catch (e) {
+                console.log(`  -> Não encontrou lista de resultados, tentando direto...`);
+            }
+            // Busca a seção de lotação por múltiplos seletores
             let status_movimento = 'Sem dados ao vivo';
             let percentual_estimado = null;
-            if (count > 0) {
-                for (let i = 0; i < count; i++) {
-                    const text = await busyElements.nth(i).getAttribute('aria-label');
-                    if (text && (text.includes('Atualmente') || text.includes('Agora'))) {
+            // Seletor 1: aria-label contendo "Atualmente" (ao vivo)
+            try {
+                const liveEl = page.locator('[aria-label*="Atualmente"]').first();
+                if (await liveEl.isVisible({ timeout: 3000 })) {
+                    const text = await liveEl.getAttribute('aria-label');
+                    if (text) {
                         status_movimento = text;
                         const match = text.match(/(\d+)%/);
-                        if (match) {
+                        if (match)
                             percentual_estimado = parseInt(match[1], 10);
-                        }
-                        break; // Achou o ao vivo
                     }
                 }
+            }
+            catch (e) { /* fallback */ }
+            // Seletor 2: procura aria-label contendo "ocupação" ou "movimentado"
+            if (status_movimento === 'Sem dados ao vivo') {
+                try {
+                    const busyElements = page.locator('[aria-label*="ocupação"], [aria-label*="movimentado"], [aria-label*="movimento"]');
+                    const count = await busyElements.count();
+                    for (let i = 0; i < count; i++) {
+                        const text = await busyElements.nth(i).getAttribute('aria-label');
+                        if (text && (text.includes('Atualmente') || text.includes('Agora') || text.includes('Normalmente'))) {
+                            status_movimento = text;
+                            const match = text.match(/(\d+)%/);
+                            if (match)
+                                percentual_estimado = parseInt(match[1], 10);
+                            break;
+                        }
+                    }
+                }
+                catch (e) { /* fallback */ }
+            }
+            // Seletor 3: procura texto na página sobre horários de pico
+            if (status_movimento === 'Sem dados ao vivo') {
+                try {
+                    const bodyText = await page.locator('body').innerText();
+                    const lines = bodyText.split('\n');
+                    for (const line of lines) {
+                        if (line.includes('Atualmente') || line.includes('Agora')) {
+                            status_movimento = line.trim();
+                            const match = line.match(/(\d+)%/);
+                            if (match)
+                                percentual_estimado = parseInt(match[1], 10);
+                            break;
+                        }
+                    }
+                    // Se achou algo no texto, limita a 100 caracteres
+                    if (status_movimento.length > 100)
+                        status_movimento = status_movimento.substring(0, 100);
+                }
+                catch (e) { /* fallback */ }
             }
             console.log(`-> Resultado para ${placeName}: ${status_movimento} (${percentual_estimado}%)`);
             // Salva no Supabase (se as variáveis estiverem configuradas corretamente, senão apenas loga)
