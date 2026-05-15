@@ -41,7 +41,7 @@ async function scrapePlaces() {
     try {
       console.log(`Buscando: ${placeName}`);
       const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(placeName)}`;
-      await page.goto(searchUrl, { waitUntil: 'networkidle' });
+      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       await delay(4000, 7000);
 
       // Fecha consentimento de cookies se aparecer
