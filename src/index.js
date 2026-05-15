@@ -46,58 +46,79 @@ async function scrapePlaces() {
                 }
             }
             catch (e) { /* ignora */ }
-            // Tenta clicar no primeiro card de resultado da lista lateral
+            // Aguarda a lista de resultados carregar
             try {
-                // Múltiplos seletores para o primeiro resultado
-                const selectors = [
-                    'a[href*="/maps/place/"]',
-                    'div[role="article"] a',
-                    'a[class*="place"]',
-                ];
-                let clicked = false;
-                for (const sel of selectors) {
-                    const el = page.locator(sel).first();
-                    if (await el.isVisible({ timeout: 3000 }).catch(() => false)) {
-                        await el.click();
-                        clicked = true;
-                        break;
-                    }
-                }
-                if (!clicked) {
-                    // Último recurso: clica no centro da tela (pode ativar o primeiro resultado)
-                    await page.mouse.click(600, 300);
-                }
-                await delay(4000, 7000);
+                await page.waitForSelector('a[href*="/maps/place/"]', { timeout: 15000 });
+                await delay(1500, 3000);
             }
             catch (e) {
-                console.log(`  -> Não conseguiu clicar em resultado`);
+                console.log('  -> Aviso: resultados demoraram, tentando continuar...');
+            }
+            // Tenta clicar no primeiro resultado usando force:true para garantir
+            try {
+                const firstLink = page.locator('a[href*="/maps/place/"]').first();
+                await firstLink.waitFor({ state: 'attached', timeout: 10000 });
+                await firstLink.click({ force: true, timeout: 10000 });
+                console.log('  -> Clicou no primeiro resultado');
+                await delay(4000, 7000);
+                // Aguarda o painel de detalhes do lugar carregar (h1 com o nome)
+                try {
+                    await page.waitForSelector('h1', { timeout: 10000 });
+                    console.log('  -> Painel de detalhes carregado');
+                }
+                catch {
+                    console.log('  -> Painel pode não ter carregado completamente');
+                }
+                await delay(2000, 4000);
+            }
+            catch (e) {
+                console.log('  -> Não conseguiu clicar, tenta scrollar lista e tentar de novo');
+                // Tenta dar scroll na lista e clicar de novo
+                try {
+                    const listPanel = page.locator('div[role="feed"], div[role="main"], div.m6QErb').first();
+                    await listPanel.evaluate(el => el.scrollBy(0, 200));
+                    await delay(1000, 2000);
+                    const retryLink = page.locator('a[href*="/maps/place/"]').first();
+                    await retryLink.click({ force: true, timeout: 8000 });
+                    await delay(4000, 7000);
+                }
+                catch (e2) {
+                    console.log('  -> Realmente não conseguiu clicar');
+                }
             }
             // Busca a seção de lotação
             let status_movimento = 'Sem dados ao vivo';
             let percentual_estimado = null;
-            // Scrolla o painel lateral para baixo para carregar seções lazy
+            // Scrolla o painel lateral de INFORMAÇÕES (não o body) usando JS puro
             try {
-                // Tenta scrollar o painel principal do Maps
-                const scrollable = page.locator('div[role="main"], div.m6QErb, div[aria-label*="Resultados"], div[aria-label*="Informações"]').first();
-                if (await scrollable.isVisible({ timeout: 2000 }).catch(() => false)) {
-                    await scrollable.evaluate(el => {
-                        el.scrollTop = el.scrollHeight;
-                    });
-                    await delay(1500, 3000);
-                    // Scrolla de novo para garantir (conteúdo lazy pode carregar em etapas)
-                    await scrollable.evaluate(el => {
-                        el.scrollTop = el.scrollHeight;
-                    });
-                    await delay(1500, 3000);
-                }
-                else {
-                    // Fallback: scrolla a página toda
-                    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-                    await delay(1500, 3000);
+                const scrollScript = `
+          () => {
+            // Procura o elemento com scroll na lateral esquerda (overflow auto/scroll)
+            const allDivs = document.querySelectorAll('div');
+            let target = null;
+            for (const div of allDivs) {
+              const style = window.getComputedStyle(div);
+              if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && div.scrollHeight > div.clientHeight) {
+                target = div;
+                break;
+              }
+            }
+            if (target) {
+              target.scrollTop = target.scrollHeight;
+              return 'scrollou no: ' + (target.id || target.className || 'desconhecido');
+            }
+            return 'nenhum container com scroll encontrado';
+          }
+        `;
+                for (let s = 0; s < 5; s++) {
+                    const result = await page.evaluate(scrollScript);
+                    if (s === 0)
+                        console.log(`  -> ${result}`);
+                    await delay(1200, 2000);
                 }
             }
             catch (e) {
-                console.log('  -> Aviso: não conseguiu scrollar');
+                console.log('  -> Erro ao scrollar:', e);
             }
             // Patterns de aria-label para buscar
             const patterns = [
